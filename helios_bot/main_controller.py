@@ -233,12 +233,37 @@ class HeliosMainController:
         }
 
         failed_modules = []
+        degraded_modules = []
+        paper_trading_mode = False
+
+        # Check if we're in paper trading mode
+        for module_name, health in health_checks.items():
+            if health.get('paper_trading_mode', False):
+                paper_trading_mode = True
+                break
+
         for module_name, health in health_checks.items():
             if not health.get('overall_healthy', False):
                 failed_modules.append(module_name)
-                self.logger.error(f"Module health check failed: {module_name}")
+                self.logger.error(f"Module {module_name} health check failed: {health}")
+            elif health.get('degraded_mode', False):
+                degraded_modules.append(module_name)
+                self.logger.warning(f"Module {module_name} running in degraded mode: {health}")
+
+        # In paper trading mode, we can tolerate certain modules running in degraded mode
+        if failed_modules and paper_trading_mode:
+            # Risk engine can be in degraded mode in paper trading
+            if len(failed_modules) == 1 and failed_modules[0] == 'risk_engine':
+                self.logger.warning("Risk engine health check failed but running in paper trading mode - continuing in degraded mode")
+                return
 
         if failed_modules:
+            modules_str = ', '.join(failed_modules)
+            raise SystemError(f"The following modules failed health checks: {modules_str}")
+
+        if degraded_modules:
+            modules_str = ', '.join(degraded_modules)
+            self.logger.warning(f"The following modules are running in degraded mode: {modules_str}")
             raise HeliosControllerError(f"Module health validation failed: {failed_modules}")
 
     def _load_state(self) -> None:
@@ -994,6 +1019,12 @@ class HeliosMainController:
                 'risk_engine': self.risk_engine.health_check(),
                 'execution_engine': self.execution_engine.health_check()
             }
+
+            # Check if any module is running in paper trading mode or degraded mode
+            for module_name, health in module_healths.items():
+                if health.get('degraded_mode', False):
+                    health_status['degraded_mode'] = True
+                    health_status['warnings'].append(f"{module_name} running in degraded mode")
 
             health_status['module_details'] = module_healths
 

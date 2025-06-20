@@ -52,6 +52,8 @@ class HeliosRunner:
         self.controller: Optional[HeliosMainController] = None
         self.logger = None
         self.shutdown_requested = False
+        self.api_retry_count = 0
+        self.max_api_retries = 5
 
     def setup_environment(self) -> bool:
         """Load and validate environment variables."""
@@ -81,7 +83,13 @@ class HeliosRunner:
                 print("Please check your .env file and ensure all API credentials are set.")
                 return False
 
-            print("✓ Environment variables loaded successfully")
+            # Check if we're using paper trading keys (free account)
+            api_key = os.getenv("APCA_API_KEY_ID", "")
+            if api_key and (api_key.startswith("PK") or "paper" in os.getenv("APCA_API_BASE_URL", "").lower()):
+                print("✓ Environment variables loaded successfully (PAPER TRADING mode detected)")
+                print("ℹ️  Paper trading accounts have API limitations - some features may be restricted")
+            else:
+                print("✓ Environment variables loaded successfully")
             return True
 
         except Exception as e:
@@ -146,22 +154,70 @@ class HeliosRunner:
 
             # Perform health check
             health_status = self.controller.health_check()
-            if not health_status.get('overall_healthy', False):
-                self.logger.error("Controller health check failed!")
-                self.logger.error(f"Health status: {health_status}")
-                return False
 
-            self.logger.info("✓ Controller initialized and health check passed")
+            # Check if we're running in degraded mode (paper trading with limitations)
+            degraded_mode = health_status.get('degraded_mode', False)
+            paper_trading = any(
+                module.get('paper_trading_mode', False)
+                for module_name, module in health_status.get('module_details', {}).items()
+            )
+
+            if not health_status.get('overall_healthy', False):
+                # If paper trading, we can be more lenient with certain failures
+                if paper_trading:
+                    self.logger.warning("Controller health check shows issues but we're in paper trading mode")
+                    self.logger.warning(f"Health status: {health_status}")
+                    self.logger.warning("Attempting to continue in degraded mode...")
+                    # Force continue in paper trading mode
+                    if all(
+                        module.get('config_loaded', False)
+                        for module_name, module in health_status.get('module_details', {}).items()
+                    ):
+                        self.logger.warning("Basic configuration is loaded, continuing with limited functionality")
+                    else:
+                        self.logger.error("Critical module configuration missing, cannot continue")
+                        return False
+                else:
+                    self.logger.error("Controller health check failed!")
+                    self.logger.error(f"Health status: {health_status}")
+                    return False
+
+            if degraded_mode:
+                self.logger.warning("✓ Controller initialized but running in DEGRADED MODE (limited functionality)")
+                self.logger.warning("Some features may not work correctly with the free paper trading account")
+            else:
+                self.logger.info("✓ Controller initialized and health check passed")
             return True
 
         except Exception as e:
             log_critical_error(self.logger, f"Failed to initialize controller: {e}")
             return False
 
+    def is_paper_trading_mode(self) -> bool:
+        """Check if we're running in paper trading mode."""
+        if not self.controller:
+            return False
+
+        try:
+            health_status = self.controller.health_check()
+            # Check if any module reports paper trading mode
+            return any(
+                module.get('paper_trading_mode', False)
+                for module_name, module in health_status.get('module_details', {}).items()
+            )
+        except:
+            # Default to False if we can't determine
+            return False
+
     def run_main_loop(self) -> None:
         """Run the main trading loop."""
         try:
             self.logger.info("Starting main trading loop...")
+            paper_trading = self.is_paper_trading_mode()
+
+            if paper_trading:
+                self.logger.warning("Running in PAPER TRADING mode with free account limitations")
+                self.logger.warning("Some API features may be limited or unavailable")
 
             while not self.shutdown_requested:
                 try:
@@ -195,12 +251,25 @@ class HeliosRunner:
 
                 except HeliosControllerError as e:
                     self.logger.error(f"Controller error during main loop: {e}")
+
+                    # Handle API limitations in paper trading mode with more tolerance
+                    if paper_trading and ("api" in str(e).lower() or "data" in str(e).lower()):
+                        self.logger.warning("API limitation encountered in paper trading mode, will retry")
+                        time.sleep(120)  # Wait longer before retrying API issues in paper trading
+                        continue
+
                     # Continue loop unless it's a critical error
                     if "critical" in str(e).lower() or "emergency" in str(e).lower():
                         break
                     time.sleep(60)  # Wait a minute before retrying
 
                 except Exception as e:
+                    # In paper trading mode, be more resilient to certain errors
+                    if paper_trading and ("api" in str(e).lower() or "connection" in str(e).lower()):
+                        self.logger.warning(f"API error in paper trading mode, will retry: {e}")
+                        time.sleep(120)  # Wait longer for API issues
+                        continue
+
                     log_critical_error(self.logger, f"Unexpected error in main loop: {e}")
                     break
 
@@ -256,9 +325,24 @@ class HeliosRunner:
             # Setup signal handlers
             self.setup_signal_handlers()
 
-            # Initialize controller
-            if not self.initialize_controller():
-                return 1
+            # Initialize controller with retry for paper trading API limitations
+            max_controller_retries = 3
+            for attempt in range(1, max_controller_retries + 1):
+                try:
+                    if self.initialize_controller():
+                        break
+
+                    if attempt < max_controller_retries:
+                        self.logger.warning(f"Controller initialization failed, retrying ({attempt}/{max_controller_retries})...")
+                        time.sleep(10)  # Wait before retrying
+                    else:
+                        self.logger.error("All controller initialization attempts failed")
+                        return 1
+                except Exception as e:
+                    self.logger.error(f"Error during controller initialization attempt {attempt}: {e}")
+                    if attempt >= max_controller_retries:
+                        return 1
+                    time.sleep(10)
 
             # Run main loop
             self.run_main_loop()

@@ -609,17 +609,37 @@ class HeliosDataHandler:
             api_health = self.api_client.health_check()
             health_status['api_client_healthy'] = api_health.get('api_connected', False)
 
-            # Test latest prices (sample)
+            # Test latest prices (sample) using free account compatible methods
             if self.universe:
-                sample_symbols = self.universe[:3]  # Test first 3 symbols
-                latest_prices = self.get_latest_prices(sample_symbols)
-                health_status['latest_prices_available'] = len(latest_prices) > 0
+                sample_symbols = self.universe[:2]  # Test first 2 symbols for free accounts
+                try:
+                    latest_prices = self.get_latest_prices(sample_symbols)
+                    health_status['latest_prices_available'] = len(latest_prices) > 0
+                    health_status['latest_prices_count'] = len(latest_prices)
+                except Exception as price_error:
+                    health_status['latest_prices_available'] = False
+                    health_status['latest_prices_error'] = str(price_error)
+                    self.logger.warning(f"Latest prices health check failed: {str(price_error)}")
 
-            # Test historical data (sample)
+            # Test historical data (sample) - non-critical for health, use older date range for free accounts
             if self.universe:
-                sample_data = self.get_historical_data(symbols=self.universe[:2], days_back=5)
-                health_status['historical_data_available'] = not sample_data.empty
+                try:
+                    # Try with a smaller sample and older date range for free accounts
+                    sample_data = self.get_historical_data(symbols=self.universe[:1], days_back=30)
+                    health_status['historical_data_available'] = not sample_data.empty
+                    if sample_data.empty:
+                        health_status['historical_data_warning'] = "Historical data returned empty (may be subscription limitation)"
+                except Exception as hist_error:
+                    # Historical data may not be available due to subscription limits or market hours
+                    health_status['historical_data_available'] = False
+                    if "subscription does not permit" in str(hist_error).lower():
+                        health_status['historical_data_warning'] = "Free account: Historical data access limited (non-critical)"
+                    else:
+                        health_status['historical_data_warning'] = f"Historical data not accessible: {str(hist_error)}"
+                    self.logger.warning(f"Historical data health check failed (non-critical for free accounts): {str(hist_error)}")
 
+            # Overall health based on critical components only
+            # Historical data is not critical for startup - only for actual trading operations
             health_status['overall_healthy'] = all([
                 health_status['api_client_healthy'],
                 health_status['universe_loaded'],
