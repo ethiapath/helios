@@ -1,0 +1,48 @@
+# Core trading and data analysis dependencies
+alpaca-trade-api>=3.0.0
+pandas>=2.1.0
+numpy>=1.24.0
+statsmodels>=0.14.0
+scipy>=1.11.0
+
+# Configuration and environment management
+python-dotenv>=1.0.0
+
+# HTTP requests and API handling
+requests>=2.31.0
+urllib3>=1.24.0,<2.0.0  # Compatible with alpaca-trade-api requirements
+
+# Date and time handling
+pytz>=2023.3
+python-dateutil>=2.8.2
+
+# Logging and monitoring
+structlog>=23.2.0
+
+# Optional: SMS alerting via Twilio
+# twilio>=8.10.0  # Uncomment if SMS alerts are needed
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-mock>=3.12.0
+pytest-cov>=4.1.0
+
+# Code quality and formatting
+black>=23.11.0
+flake8>=6.1.0
+mypy>=1.7.0
+
+# Development utilities
+ipykernel>=6.26.0  # For Jupyter notebook development/analysis
+matplotlib>=3.8.0  # For visualization during development
+seaborn>=0.13.0    # For statistical visualization
+
+# Optional: Advanced scheduling (if cron is not sufficient)
+# schedule>=1.2.0  # Uncomment if advanced scheduling is needed
+
+# Email support (built-in smtplib will be used)
+# No additional packages needed for basic email functionality
+
+# Setup tools compatibility for Python 3.12+
+setuptools>=68.0.0
+wheel>=0.41.0

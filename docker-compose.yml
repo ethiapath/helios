@@ -1,0 +1,184 @@
+# Helios Trading Bot - Docker Compose Configuration
+# Production-ready containerized deployment with monitoring and persistence
+
+version: '3.8'
+
+services:
+  # Main Helios Trading Bot Service
+  helios-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+        VCS_REF: ${VCS_REF:-$(git rev-parse --short HEAD)}
+        VERSION: ${VERSION:-1.0.0}
+
+    container_name: helios-trading-bot
+
+    # Environment configuration
+    env_file:
+      - .env
+
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      - TZ=America/New_York  # Market timezone
+
+    # Volume mounts for persistence
+    volumes:
+      - ./logs:/app/logs:rw
+      - ./state:/app/state:rw
+      - ./config:/app/config:ro
+      - helios-data:/app/data
+
+    # Restart policy for production reliability
+    restart: unless-stopped
+
+    # Resource limits for safety
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.1'
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "python", "-c", "
+        from helios_bot.main_controller import HeliosMainController;
+        controller = HeliosMainController();
+        status = controller.health_check();
+        exit(0 if status.get('overall_healthy', False) else 1)
+        "]
+      interval: 5m
+      timeout: 30s
+      start_period: 2m
+      retries: 3
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Security settings
+    security_opt:
+      - no-new-privileges:true
+
+    # Run as non-root user
+    user: "helios:helios"
+
+    # Port exposure (for future monitoring endpoints)
+    ports:
+      - "8080:8080"  # Reserved for future monitoring API
+
+    # Dependencies
+    depends_on:
+      - helios-monitor
+
+    # Network configuration
+    networks:
+      - helios-network
+
+  # Log monitoring and rotation service
+  helios-monitor:
+    image: alpine:latest
+    container_name: helios-log-monitor
+
+    volumes:
+      - ./logs:/logs:rw
+
+    # Simple log rotation and monitoring
+    command: >
+      sh -c "
+        while true; do
+          find /logs -name '*.log' -size +100M -exec sh -c 'mv \"$$1\" \"$$1.old\" && touch \"$$1\"' _ {} \\;
+          find /logs -name '*.log.old' -mtime +7 -delete
+          sleep 3600
+        done
+      "
+
+    restart: unless-stopped
+
+    networks:
+      - helios-network
+
+  # Future: Database service for trade history (optional)
+  # helios-db:
+  #   image: postgres:13-alpine
+  #   container_name: helios-database
+  #   environment:
+  #     POSTGRES_DB: helios
+  #     POSTGRES_USER: helios
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD}
+  #   volumes:
+  #     - helios-db-data:/var/lib/postgresql/data
+  #   restart: unless-stopped
+  #   networks:
+  #     - helios-network
+
+# Named volumes for data persistence
+volumes:
+  helios-data:
+    driver: local
+  # helios-db-data:
+  #   driver: local
+
+# Network configuration
+networks:
+  helios-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Production deployment commands:
+#
+# 1. Initial setup:
+#    cp .env.example .env
+#    # Edit .env with your API credentials
+#
+# 2. Build and start:
+#    docker-compose up -d --build
+#
+# 3. View logs:
+#    docker-compose logs -f helios-bot
+#
+# 4. Check status:
+#    docker-compose ps
+#    docker-compose exec helios-bot python -c "
+#      from helios_bot.main_controller import HeliosMainController;
+#      controller = HeliosMainController();
+#      print(controller.get_system_status())
+#    "
+#
+# 5. Emergency stop:
+#    docker-compose exec helios-bot python kill_switch.py
+#
+# 6. Update deployment:
+#    docker-compose down
+#    docker-compose up -d --build
+#
+# 7. Backup state:
+#    docker-compose exec helios-bot tar -czf /app/logs/backup-$(date +%Y%m%d).tar.gz /app/state
+#
+# 8. Production monitoring:
+#    docker-compose logs --tail=50 -f
+#    docker stats helios-trading-bot
+#
+# Security notes:
+# - Never commit .env file with real credentials
+# - Use secrets management in production (Docker Swarm secrets, Kubernetes secrets)
+# - Regularly backup state/ directory
+# - Monitor resource usage and adjust limits as needed
+# - Set up external monitoring and alerting
+#
+# Scaling considerations:
+# - For multiple instances, use different state directories
+# - Consider load balancing for API calls
+# - Implement distributed locking for position management
+# - Use external database for shared state in multi-instance setup
